@@ -1,34 +1,46 @@
 import openai
 import memory
-from utils import getJobs
+import json
+from utils import get_jobs, parse_action, format_memory
 
 from prompts import (
     ACTION_PROMPT,
     PREFIX,
-    TASK_PROMPT
+    TASK_PROMPT,
+    JOB_SUMMARIZE_PROMPT
 )
 
 MODEL = "gpt-3.5-turbo"  # "gpt-4"
 openai.api_key = ""
 
-def parse_action(string: str):
-    assert string.startswith("action:")
-    idx = string.find("action_input=")
-    if idx == -1:
-        return string[8:], None
-    return string[8 : idx - 1], string[idx + 13 :].strip("'").strip('"')
 
-def call_main(purpose, task, action_input):
+def summarize_job(purpose, task, title, description):
+    summary = run_gpt(
+        JOB_SUMMARIZE_PROMPT,
+        stop_tokens=[],
+        max_tokens=64,
+        purpose=purpose,
+        task=task,
+        title=title,
+        description=description
+    )
+    return summary
+
+
+def call_main(purpose, task, history, action_input):
+    formatted_memory = format_memory(memory.permanent_memory)
     resp = run_gpt(
         ACTION_PROMPT,
         stop_tokens=["observation:", "task:"],
         max_tokens=256,
         purpose=purpose,
         task=task,
-        memory=memory.permanent_memory
+        history=history
     )
+    memory.permanent_memory['current_job'] = ''
+    memory.permanent_memory['current_user_response'] = ''
+
     lines = resp.strip().strip("\n").split("\n")
-    print(resp)
     for line in lines:
         if line == "":
             continue
@@ -37,12 +49,13 @@ def call_main(purpose, task, action_input):
         elif line.startswith("action: "):
             action_name, action_input = parse_action(line)
             print(action_name, action_input)
-            return action_name, action_input, task
+            return action_name, action_input, task, history
         else:
             assert False, "unknown action: {}".format(line)
-    return "MAIN", None, task
+    return "MAIN", None, task, history
 
-def call_set_task(purpose, task, action_input):
+
+def call_set_task(purpose, task, history, action_input):
     task = run_gpt(
         TASK_PROMPT,
         stop_tokens=[],
@@ -50,31 +63,56 @@ def call_set_task(purpose, task, action_input):
         purpose=purpose,
         task=task,
     ).strip("\n")
-    return "MAIN", None, task
+    return "MAIN", None, task, history
 
-def search_task(purpose, task, action_input):
-    jobs = getJobs(action_input)
-    task = run_gpt(
-        TASK_PROMPT,
-        stop_tokens=[],
-        max_tokens=64,
-        purpose=purpose,
-        task=task,
-    ).strip("\n")
-    return "MAIN", None, task
 
-def ask_jobseeker_info(purpose, task, action_input):
+def search_task(purpose, task, history, action_input):
+    title = "Journalist"
+    try:
+        parsed_json = json.loads(action_input.replace("'", '"'))
+        if "title" in parsed_json:
+            title = parsed_json['title']
+    except:
+        pass
+    finally:
+        pass
+    jobs = get_jobs(title)
+    summarized_jobs = list(map(lambda d: summarize_job(purpose, task, d['title'], d['description']), jobs))
+    for job in summarized_jobs:
+        memory.permanent_memory['found_jobs'].append(job)
+        history += "\nWe found this job: " + job
+    history += "\nobservation: We found " + str(len(summarized_jobs)) + " job(s) for " + title
+    return "MAIN", None, task, history
+
+
+def ask_jobseeker_info(purpose, task, history, action_input):
     print("Please provide some information about yourself: ", action_input)
     info = input()
-    memory.permanent_memory.append("The job seekers' desired " + action_input + " is : " + info)
-    return "MAIN", info, task
+    memory.permanent_memory['title'] = info
+    history += "\nobservation: The user provided this information: " + info
+    return "MAIN", None, task, history
+
+
+def show_job(purpose, task, history, action_input):
+    print("What do you think of this job?")
+    print(action_input)
+    response = input()
+    memory.permanent_memory['current_user_response'] = response
+    memory.permanent_memory['current_job'] = action_input
+    history += "\nobservation: The user responded with: '" + response + "' when we showed a job with this description: " + action_input
+    return "MAIN", None, task, history
+
+
+def apply_for_job(purpose, task, history, action_input):
+    exit(0)
+
 
 def run_gpt(
-    prompt_template,
-    stop_tokens,
-    max_tokens,
-    purpose,
-    **prompt_kwargs,
+        prompt_template,
+        stop_tokens,
+        max_tokens,
+        purpose,
+        **prompt_kwargs,
 ):
     content = PREFIX.format(
         purpose=purpose,
@@ -88,54 +126,57 @@ def run_gpt(
         max_tokens=max_tokens,
         stop=stop_tokens if stop_tokens else None,
     )["choices"][0]["message"]["content"]
-    print("*********")
-    print(resp)
     return resp
+
 
 NAME_TO_FUNC = {
     "MAIN": call_main,
     "UPDATE_TASK": call_set_task,
     "ASK_JOBSEEKER_INFO": ask_jobseeker_info,
-    "SEARCH_JOBS": search_task
+    "SEARCH_JOBS": search_task,
+    "SHOW_JOB": show_job,
+    "APPLY_FOR_JOB": apply_for_job
 }
 
-def run_action(purpose, task, action_name, action_input):
+
+def run_action(purpose, task, history, action_name, action_input):
     if action_name == "COMPLETE":
         exit(0)
 
     assert action_name in NAME_TO_FUNC
 
     print("RUN: ", action_name, action_input)
-    return NAME_TO_FUNC[action_name](purpose, task, action_input)
+    return NAME_TO_FUNC[action_name](purpose, task, history, action_input)
 
 
 def run(purpose, task=None):
     action_name = "UPDATE_TASK" if task is None else "MAIN"
     action_input = None
+    history = ""
     while True:
         print("")
-        print("")
         print("---")
-        print("purpose:", purpose)
         print("task:", task)
         print("---")
 
-        action_name, action_input, task = run_action(
+        action_name, action_input, task, history = run_action(
             purpose,
             task,
+            history,
             action_name,
             action_input,
         )
 
-def mainLoop():
-    keepSearching = True
-    while (keepSearching):
-        pass
-    # read input
-    # perform agent call
-    # output result
-    # switch state
-    # loop
 
-# run("help me find a job")
+input_purpose = """
+Help the jobseeker find a job.
+You are searching for jobs in the Netherlands.
+Ask the job seeker first about his preferred job title.
+When the first job is found show it to the jobseeker to see if they want to apply.
+If the job seeker wants to apply, apply them to the job.
+If the user likes the job consider the purpose completed.
+No extra information is needed to apply for a job.
+Don't ask for a jobseeker info if you already have it.
+"""
 
+run(input_purpose)
