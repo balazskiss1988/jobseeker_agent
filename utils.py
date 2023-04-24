@@ -47,9 +47,9 @@ def format_memory(memory):
     if key_exist_and_not_blank(memory, 'current_user_response'):
         text += "\nThe user has responded with: " + memory['current_user_response']
     if key_exist_and_not_blank(memory, 'current_job'):
-        text += "\nThe current job shown to the user is: " + memory['current_job']
+        text += "\nThe current job to be shown to the user is: " + memory['current_job']
     if 'found_jobs' in memory and len(memory['found_jobs']) > 0:
         text += "\nThe jobs found so far are: " + ' '.join(memory['found_jobs'])
     if key_exist_and_not_blank(memory, 'title'):
-        text += "\nThe current job title we are searching for is: " + memory['title']
+        text += "\nThe jobsekeer's preferred job title is: " + memory['title']
     return text
